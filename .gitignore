@@ -3,6 +3,11 @@ dist/
 dist-electron/
 release/
 .test-data/
+.svn/
+credentials.json
+credentials.json.tmp
+settings.json
+settings.json.tmp
 .DS_Store
 *.log
 work/
