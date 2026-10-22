@@ -11,3 +11,30 @@
 .workspace.is-resizing,.workspace.is-resizing *{cursor:col-resize!important;user-select:none!important}
 
 .editor-button{height:36px;padding:0 11px;flex-shrink:0;font-size:12px}.project-menu{position:relative;flex-shrink:0}.project-menu-popover{position:absolute;top:calc(100% + 8px);left:0;min-width:145px;padding:5px;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 25px #25395620;z-index:15}.project-menu-popover button{width:100%;justify-content:flex-start;border:0;box-shadow:none}.alias-location{display:flex;flex-direction:column;gap:8px;font-size:12px;color:#62748d}.alias-location span{overflow-wrap:anywhere;line-height:1.6}.alias-reset{align-self:flex-start;font-size:12px}
+/* Deleted directories keep their complete scope above the per-file diff. */
+.folder-deletion{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden}
+.deletion-overview{display:flex;flex-direction:column;flex:0 1 48%;min-height:170px;border-bottom:1px solid var(--line);overflow:hidden}
+.deletion-heading{display:flex;align-items:flex-start;gap:10px;padding:17px 20px 9px;color:#d56564;flex-shrink:0}
+.deletion-heading>div{display:flex;flex-direction:column;gap:5px;min-width:0}
+.deletion-heading strong{font-size:14px;color:#344155;overflow-wrap:anywhere}
+.deletion-heading span{font-size:12px;color:#7b889b;line-height:1.5}
+.deletion-summary{font-size:12px;color:#9b5d5a;padding:0 20px 10px;margin:0;flex-shrink:0}
+.deletion-tree{list-style:none;padding:0;margin:0;overflow:auto;min-height:0;flex:1;background:#fffdfd}
+.deletion-tree>li{margin:0;padding:0;min-width:0}
+.deletion-entry{display:flex;align-items:center;justify-content:flex-start;gap:8px;width:100%;min-height:32px;box-sizing:border-box;border:0;border-radius:0;padding:7px 14px;background:transparent;box-shadow:none;text-align:left;font-size:12px;color:#68778d;font-weight:400;min-width:0}
+button.deletion-entry:hover{background:#fff1f0;border:0}
+button.deletion-entry.selected{background:#eaf2ff;color:#3677ca}
+.deletion-mark{color:#ce7773;font-size:10px;font-weight:650}
+.deletion-name{color:#35425a;overflow-wrap:anywhere;white-space:normal;min-width:0}
+.deletion-kind{margin-left:auto;flex-shrink:0;color:#98a0ae;font-size:10px}
+.deletion-help{display:flex;flex:1;align-items:center;justify-content:center;text-align:center;padding:25px;color:#8793a5;font-size:12px;line-height:1.7}
+.folder-deletion>.diff-panel{flex:1;min-height:0}
+.deletion-empty,.deletion-status{padding:15px 20px;color:#8793a5;font-size:12px;line-height:1.6}
+.deletion-status{display:flex;align-items:center;gap:8px}
+.deletion-error{color:#c95c57}
+.deletion-review{overflow:auto}
+.deletion-review>p{font-size:12px;color:#6c7a90;line-height:1.6;margin:0 0 16px}
+.deletion-review-folder{border:1px solid #eddcd9;border-radius:8px;overflow:hidden;margin-top:12px}
+.deletion-review-folder>h3{display:flex;gap:9px;align-items:center;overflow-wrap:anywhere;padding:12px 14px 8px;font-size:13px;color:#6d4949;background:#fffafa}
+.deletion-review-folder>.deletion-summary{padding:0 14px 11px;background:#fffafa}
+.deletion-review-folder>.deletion-tree{max-height:260px;border-top:1px solid #f2e6e4}

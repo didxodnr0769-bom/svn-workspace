@@ -167,6 +167,7 @@ function setupIPC(): void {
   });
   handle('status', id => apiService().status(project(id).path));
   handle('workingDiff', (id, relative) => apiService().workingDiff(project(id).path, text(relative, '파일')));
+  handle('deletionPreview', (id, relative) => apiService().deletionPreview(project(id).path, text(relative, '폴더')));
   handle('update', (id, auth) => mutation(async () => { const selected = project(id); return withAuth(selected.url, auth, account => apiService().update(selected.path, account)); }));
   handle('commit', (id, files, message, auth) => mutation(async () => {
     const selected = project(id);

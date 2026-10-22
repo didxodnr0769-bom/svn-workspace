@@ -10,6 +10,8 @@ export interface HistoryEntry { revision: number; author: string; date: string; 
 export interface HistoryPage { entries: HistoryEntry[]; hasMore: boolean }
 export type WorkingStatus = 'modified' | 'added' | 'deleted' | 'missing' | 'unversioned' | 'conflicted' | 'replaced' | 'normal' | 'obstructed' | 'incomplete';
 export interface WorkingChange { path: string; status: WorkingStatus; props: string; treeConflict: boolean; kind: 'file' | 'dir' | 'unknown' }
+export interface DeletionEntry { path: string; kind: 'file' | 'dir' | 'unknown' }
+export interface DeletionPreview { path: string; entries: DeletionEntry[] }
 export interface OperationFile { path: string; action: string }
 export interface MutationResult { revision?: number; output: string; files: OperationFile[]; conflicts: string[] }
 export interface OperationProgress { operation: 'checkout' | 'update' | 'commit' | 'resolve'; message: string }
@@ -29,6 +31,7 @@ export interface SvnAPI {
   historicalDiff(id: string, revision: number, change: CommittedPath, auth?: AuthOptions): Promise<Result<string>>;
   status(id: string): Promise<Result<WorkingChange[]>>;
   workingDiff(id: string, path: string): Promise<Result<string>>;
+  deletionPreview(id: string, path: string): Promise<Result<DeletionPreview>>;
   update(id: string, auth?: AuthOptions): Promise<Result<MutationResult>>;
   commit(id: string, paths: string[], message: string, auth?: AuthOptions): Promise<Result<MutationResult>>;
   resolve(id: string, path: string): Promise<Result<MutationResult>>;

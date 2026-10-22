@@ -119,6 +119,122 @@ test('missing file commits deletion and deletion history still shows contents', 
   assert.match(diff, /-special original/);
 });
 
+async function folderDeletionFixture(t: TestContext) {
+  const fixtureData = await fixture(t);
+  const folder = '삭제 폴더@예제';
+  const absolute = path.join(fixtureData.wc, folder);
+  await mkdir(path.join(absolute, 'nested', 'empty'), { recursive: true });
+  await writeFile(path.join(absolute, 'first.txt'), 'first contents\n');
+  await writeFile(path.join(absolute, 'nested', '한글 @파일.txt'), 'nested contents\n');
+  await fixtureData.svn('add', `${folder}@`);
+  await fixtureData.svn('commit', '-m', '예제 폴더 추가', '--username', 'demo');
+  await fixtureData.svn('update');
+  return { ...fixtureData, folder, absolute };
+}
+
+test('scheduled folder deletion previews all descendants without mutation and commits only selected deletion', async t => {
+  const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+  await svn('delete', `${folder}@`);
+  await writeFile(path.join(wc, 'alpha.txt'), 'keep unrelated local change\n');
+  const before = await svn('status');
+  const preview = await service.deletionPreview(wc, folder);
+  assert.equal(preview.path, folder);
+  assert.deepEqual(preview.entries, [
+    { path: `${folder}/first.txt`, kind: 'file' },
+    { path: `${folder}/nested`, kind: 'dir' },
+    { path: `${folder}/nested/empty`, kind: 'dir' },
+    { path: `${folder}/nested/한글 @파일.txt`, kind: 'file' },
+  ]);
+  assert.equal((await svn('status')).stdout, before.stdout);
+  const result = await service.commit(wc, [`${folder}/nested/한글 @파일.txt`, folder, `${folder}/nested`, folder], '선택 폴더 삭제');
+  assert.equal(result.revision, 3);
+  const remaining = await service.status(wc);
+  assert.deepEqual(remaining.map(change => [change.path, change.status]), [['alpha.txt', 'modified']]);
+  assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'keep unrelated local change\n');
+  const latest = (await service.history(wc)).entries[0];
+  assert.deepEqual(latest.paths.map(change => [change.path, change.action]), [[`/${folder}`, 'D']]);
+  await assert.rejects(readFile(path.join(absolute, 'first.txt')));
+});
+
+test('filesystem-missing folder retains complete metadata preview and can commit recursive deletion', async t => {
+  const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+  await rm(absolute, { recursive: true });
+  const before = await svn('status');
+  const preview = await service.deletionPreview(wc, folder);
+  assert.equal(preview.entries.length, 4);
+  assert.ok(preview.entries.some(entry => entry.path.endsWith('/empty') && entry.kind === 'dir'));
+  assert.ok(preview.entries.some(entry => entry.path.endsWith('/한글 @파일.txt') && entry.kind === 'file'));
+  assert.equal((await svn('status')).stdout, before.stdout);
+  assert.equal((await service.status(wc)).find(change => change.path === folder)?.status, 'missing');
+  assert.equal((await service.commit(wc, [folder], '누락 폴더 삭제 반영')).revision, 3);
+  assert.deepEqual(await service.status(wc), []);
+});
+
+test('folder deletion rejects existing folders and escaped or root targets before mutation', async t => {
+  const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+  await svn('propset', 'example:note', 'changed', `${folder}@`);
+  const before = await svn('status');
+  await assert.rejects(service.commit(wc, [folder], '기존 폴더 차단'), { code: 'INVALID_ARGUMENT' });
+  for (const target of ['', '.', './', '../outside', '/tmp/outside', 'alpha.txt']) {
+    await assert.rejects(service.deletionPreview(wc, target), { code: 'INVALID_ARGUMENT' });
+  }
+  await assert.rejects(service.commit(wc, ['./'], '루트 차단'), { code: 'INVALID_ARGUMENT' });
+  assert.equal((await svn('status')).stdout, before.stdout);
+  assert.equal(await readFile(path.join(absolute, 'first.txt'), 'utf8'), 'first contents\n');
+});
+
+for (const recreatedKind of ['file', 'dir'] as const) {
+  test(`scheduled folder deletion rejects a recreated ${recreatedKind} without discarding it`, async t => {
+    const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+    await svn('delete', `${folder}@`);
+    if (recreatedKind === 'dir') {
+      await mkdir(absolute);
+      await writeFile(path.join(absolute, 'keep.txt'), 'preserve new contents\n');
+    } else await writeFile(absolute, 'preserve new contents\n');
+    const before = await svn('status');
+    await assert.rejects(service.commit(wc, [folder], '재생성 항목 차단'), { code: 'INVALID_ARGUMENT' });
+    assert.equal(await readFile(recreatedKind === 'dir' ? path.join(absolute, 'keep.txt') : absolute, 'utf8'), 'preserve new contents\n');
+    assert.equal((await svn('status')).stdout, before.stdout);
+    assert.equal((await service.history(wc)).entries[0].revision, 2);
+  });
+}
+
+for (const deletionState of ['deleted', 'missing'] as const) {
+  test(`folder deletion refuses incomplete sparse previews for ${deletionState} folders`, async t => {
+    const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+    await svn('update', '--set-depth', 'exclude', `${folder}/nested@`);
+    if (deletionState === 'deleted') await svn('delete', `${folder}@`);
+    else await rm(absolute, { recursive: true });
+    const before = await svn('status');
+    await assert.rejects(service.deletionPreview(wc, folder), error => {
+      assert.equal((error as { code: string }).code, 'INVALID_ARGUMENT');
+      assert.match((error as Error).message, /일부만 체크아웃/);
+      return true;
+    });
+    await assert.rejects(service.commit(wc, [folder], '불완전 범위 차단'), { code: 'INVALID_ARGUMENT' });
+    assert.equal((await svn('status')).stdout, before.stdout);
+    assert.equal((await service.history(wc)).entries[0].revision, 2);
+  });
+}
+
+test('folder deletion refuses a switched descendant rather than guessing its deletion scope', async t => {
+  const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+  await svn('copy', `${folder}/nested@`, 'alternate');
+  await svn('commit', 'alternate', '-m', '예제 경로 복사', '--username', 'demo');
+  await svn('update');
+  await svn('switch', '^/alternate', `${folder}/nested`);
+  await rm(absolute, { recursive: true });
+  const before = await svn('status');
+  await assert.rejects(service.deletionPreview(wc, folder), error => {
+    assert.equal((error as { code: string }).code, 'INVALID_ARGUMENT');
+    assert.match((error as Error).message, /전환된 SVN/);
+    return true;
+  });
+  await assert.rejects(service.commit(wc, [folder], '전환 경로 차단'), { code: 'INVALID_ARGUMENT' });
+  assert.equal((await svn('status')).stdout, before.stdout);
+  assert.equal((await service.history(wc)).entries[0].revision, 3);
+});
+
 test('new and copied paths have revision-specific historical diffs', async t => {
   const { wc, service, svn } = await fixture(t);
   await writeFile(path.join(wc, 'added.txt'), 'brand new line\n');

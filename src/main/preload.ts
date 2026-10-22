@@ -13,6 +13,7 @@ const api: SvnAPI = {
   historicalDiff: (id, revision, change, auth) => ipcRenderer.invoke('svn:historicalDiff', id, revision, change, auth),
   status: id => ipcRenderer.invoke('svn:status', id),
   workingDiff: (id, path) => ipcRenderer.invoke('svn:workingDiff', id, path),
+  deletionPreview: (id, path) => ipcRenderer.invoke('svn:deletionPreview', id, path),
   update: (id, auth) => ipcRenderer.invoke('svn:update', id, auth),
   commit: (id, paths, message, auth) => ipcRenderer.invoke('svn:commit', id, paths, message, auth),
   resolve: (id, path) => ipcRenderer.invoke('svn:resolve', id, path),

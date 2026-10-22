@@ -1,6 +1,6 @@
 {
   "name": "svn-workspace",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "type": "module",
   "description": "A focused personal SVN client for macOS",
@@ -14,7 +14,8 @@
     "pack:mac": "npm run build && electron-builder --mac --dir",
     "dist:mac": "npm run build && electron-builder --mac dmg",
     "postinstall": "install-electron",
-    "test:renderer": "npm run build && node tests/renderer-regression.mjs --resize"
+    "test:renderer": "npm run build && node tests/renderer-regression.mjs --resize",
+    "test:folders": "npm run build && node tests/folder-deletion-renderer.mjs"
   },
   "dependencies": {
     "fast-xml-parser": "5.11.2",

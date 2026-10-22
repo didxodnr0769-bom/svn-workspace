@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { XMLParser } from 'fast-xml-parser';
-import type { CommittedPath, Credentials, ErrorCode, HistoryEntry, HistoryPage, MutationResult, OperationProgress, WorkingChange, WorkingCopyInfo, WorkingStatus } from '../shared/types';
+import type { CommittedPath, Credentials, DeletionPreview, ErrorCode, HistoryEntry, HistoryPage, MutationResult, OperationProgress, WorkingChange, WorkingCopyInfo, WorkingStatus } from '../shared/types';
 
 export class SvnServiceError extends Error {
   constructor(public code: ErrorCode, message: string, public detail?: string, public authTarget?: string) { super(message); this.name = 'SvnServiceError'; }
@@ -160,12 +160,12 @@ export class SvnService {
       if (!wc || !accepted.has(wc.item) || (wc.item === 'normal' && wc.props !== 'modified' && wc['tree-conflicted'] !== 'true')) continue;
       const full = path.isAbsolute(entry.path) ? entry.path : path.resolve(local, entry.path);
       let kind: WorkingChange['kind'] = 'unknown';
-      try { kind = (await lstat(full)).isDirectory() ? 'dir' : 'file'; }
-      catch {
-        if (wc.item === 'deleted' || wc.item === 'missing') {
-          try { const details = xml.parse(await this.run(['info', '--xml', peg(full)])); const item = array<Record<string, any>>(details.info?.entry)[0]; kind = item?.kind === 'dir' ? 'dir' : item?.kind === 'file' ? 'file' : 'unknown'; }
-          catch (error) { if (error instanceof SvnServiceError && error.code === 'CANCELLED') throw error; }
-        }
+      if (wc.item === 'deleted' || wc.item === 'missing') {
+        // The filesystem may already be gone or contain a newly recreated item of a different kind.
+        try { const details = xml.parse(await this.run(['info', '--xml', peg(full)])); const item = array<Record<string, any>>(details.info?.entry)[0]; kind = item?.kind === 'dir' ? 'dir' : item?.kind === 'file' ? 'file' : 'unknown'; }
+        catch (error) { if (error instanceof SvnServiceError && error.code === 'CANCELLED') throw error; }
+      } else {
+        try { kind = (await lstat(full)).isDirectory() ? 'dir' : 'file'; } catch { /* Unknown paths are not selectable. */ }
       }
       if (wc.item === 'unversioned' && kind === 'dir') {
         if (!['.svn', '.git', 'node_modules'].includes(path.basename(full))) changes.push(...await this.unversionedFiles(local, full));
@@ -173,6 +173,57 @@ export class SvnService {
       else changes.push({ path: path.relative(local, full), status: (wc['tree-conflicted'] === 'true' ? 'conflicted' : wc.item) as WorkingStatus, props: wc.props ?? 'none', treeConflict: wc['tree-conflicted'] === 'true', kind });
     }
     return changes;
+  }
+
+  async deletionPreview(root: string, relativePath: string): Promise<DeletionPreview> {
+    const local = await this.local(root);
+    const full = await this.local(local, relativePath);
+    if (full === local) invalid('프로젝트 전체 대신 삭제된 하위 폴더를 선택해 주세요.');
+    return this.folderDeletionPreview(local, path.relative(local, full), await this.status(local));
+  }
+
+  private async folderDeletionPreview(local: string, relativePath: string, changes: WorkingChange[]): Promise<DeletionPreview> {
+    const change = changes.find(item => item.path === relativePath);
+    if (!change || change.kind !== 'dir' || !['deleted', 'missing'].includes(change.status) || change.treeConflict) invalid('삭제되거나 누락된 폴더를 선택해 주세요.');
+    const full = await this.local(local, relativePath);
+    await this.ensureDeletionAbsent(full);
+    // Read the local WC database, not the removed filesystem or the repository's latest tree.
+    const doc = xml.parse(await this.run(['info', '--xml', '--depth', 'infinity', peg(full)]));
+    const metadata = array<Record<string, any>>(doc.info?.entry);
+    const selected = metadata.find(item => path.resolve(item.path ?? '') === full) ?? invalid('삭제할 폴더의 SVN 정보를 확인할 수 없습니다. 새로고침한 뒤 다시 시도해 주세요.');
+    if (selected.kind !== 'dir') invalid('삭제할 폴더의 SVN 정보를 확인할 수 없습니다. 새로고침한 뒤 다시 시도해 주세요.');
+    const project = await this.info(local);
+    const expectedRootUrl = project.url.replace(/\/$/, '') + '/' + relativePath.split(path.sep).map(encodeURIComponent).join('/');
+    if (decodeURIComponent(value(selected.url)) !== decodeURIComponent(expectedRootUrl)) invalid('전환된 SVN 폴더는 삭제 범위를 확인할 수 없습니다. 별도 SVN 도구에서 처리해 주세요.');
+    const entries: DeletionPreview['entries'] = [];
+    const seen = new Set<string>();
+    for (const item of metadata) {
+      const entryPath = path.resolve(item.path ?? '');
+      if (entryPath !== full && !entryPath.startsWith(full + path.sep)) invalid('삭제 범위를 벗어나는 SVN 경로가 있습니다.');
+      const entryRelative = path.relative(local, entryPath);
+      if (await this.local(local, entryRelative) !== entryPath || seen.has(entryPath)) invalid('삭제할 SVN 경로가 올바르지 않습니다.');
+      seen.add(entryPath);
+      if (!['file', 'dir'].includes(item.kind)) invalid('삭제할 항목의 종류를 확인할 수 없습니다.');
+      const expectedUrl = value(selected.url).replace(/\/$/, '') + (entryPath === full ? '' : '/' + path.relative(full, entryPath).split(path.sep).map(encodeURIComponent).join('/'));
+      if (value(item.repository?.uuid) !== project.uuid || value(item.repository?.root) !== project.repositoryRoot || decodeURIComponent(value(item.url)) !== decodeURIComponent(expectedUrl)) invalid('전환된 SVN 경로가 있어 삭제 범위를 확인할 수 없습니다. 별도 SVN 도구에서 처리해 주세요.');
+      if (item.kind === 'dir' && value(item['wc-info']?.depth) !== 'infinity') invalid('일부만 체크아웃된 폴더는 전체 삭제 범위를 확인할 수 없습니다. 별도 SVN 도구에서 처리해 주세요.');
+      if (item['tree-conflict'] || item['wc-info']?.['tree-conflict']) invalid('트리 충돌을 해결한 후 폴더 삭제를 커밋해 주세요.');
+      if (entryPath !== full) entries.push({ path: entryRelative, kind: item.kind });
+    }
+    entries.sort((a, b) => {
+      const left = a.path.split(path.sep), right = b.path.split(path.sep);
+      for (let i = 0; i < Math.min(left.length, right.length); i++) {
+        if (left[i] !== right[i]) return left[i] < right[i] ? -1 : 1;
+      }
+      return left.length - right.length;
+    });
+    return { path: relativePath, entries };
+  }
+
+  private async ensureDeletionAbsent(full: string): Promise<void> {
+    try { await lstat(full); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    invalid('삭제된 폴더 위치에 파일이나 폴더가 다시 생겼습니다. 새로고침 후 내용을 확인해 주세요.');
   }
 
   async workingDiff(root: string, relativePath: string): Promise<string> {
@@ -235,15 +286,25 @@ export class SvnService {
     if (!files.length || files.some(f => !f || f === '.')) invalid('커밋할 파일을 선택해 주세요.');
     const local = await this.local(root);
     const selected = [...new Set(files)];
-    const fullPaths = await Promise.all(selected.map(file => this.local(local, file)));
+    const requestedPaths = [...new Set(await Promise.all(selected.map(file => this.local(local, file))))];
+    if (requestedPaths.includes(local)) invalid('프로젝트 전체 대신 커밋할 항목을 선택해 주세요.');
     return this.mutate(async () => {
       const changes = await this.status(local);
       if (changes.some(c => c.status === 'conflicted')) invalid('충돌을 해결한 후 커밋해 주세요.');
+      const deletingDirectories = requestedPaths.filter(full => changes.some(c => c.path === path.relative(local, full) && c.kind === 'dir' && ['deleted', 'missing'].includes(c.status)));
+      // A directory deletion includes its descendants even with commit --depth empty.
+      const fullPaths = requestedPaths.filter(full => !deletingDirectories.some(parent => full.startsWith(parent + path.sep)));
       const targets = new Set(fullPaths);
       for (const full of fullPaths) {
-        if (changes.some(c => c.path === path.relative(local, full) && c.kind === 'dir')) invalid('폴더 전체 대신 커밋할 파일을 각각 선택해 주세요.');
-        try { if ((await lstat(full)).isDirectory()) invalid('폴더 전체 대신 커밋할 파일을 각각 선택해 주세요.'); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        const change = changes.find(c => c.path === path.relative(local, full));
+        if (change?.kind === 'dir') {
+          if (!deletingDirectories.includes(full)) invalid('삭제된 폴더 외에는 커밋할 파일을 각각 선택해 주세요.');
+          await this.folderDeletionPreview(local, change.path, changes);
+        } else if (change?.kind === 'unknown') invalid('항목의 종류를 확인할 수 없습니다. 새로고침한 뒤 다시 시도해 주세요.');
+        else {
+          try { if ((await lstat(full)).isDirectory()) invalid('삭제된 폴더 외에는 커밋할 파일을 각각 선택해 주세요.'); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        }
       }
       for (let index = 0; index < fullPaths.length; index++) {
         const full = fullPaths[index];
@@ -252,6 +313,11 @@ export class SvnService {
         let isDirectory = false;
         try { isDirectory = (await lstat(full)).isDirectory(); } catch { /* Missing versioned file. */ }
         if (isDirectory) invalid('폴더 전체 대신 커밋할 파일을 각각 선택해 주세요.');
+        if (change?.kind === 'dir') {
+          await this.ensureDeletionAbsent(full);
+          if (change.status === 'missing') await this.run(['delete', peg(full)]);
+          continue;
+        }
         if (change?.status === 'missing') await this.run(['delete', '--force', peg(full)]);
         if (change?.status === 'unversioned' || !change) {
           if (!change) {
@@ -273,6 +339,7 @@ export class SvnService {
         // Existing scheduled additions can also have newly added ancestor directories.
         for (let p = path.dirname(full); p !== local; p = path.dirname(p)) if (changes.some(c => c.path === path.relative(local, p) && c.status === 'added')) targets.add(p);
       }
+      for (const full of fullPaths.filter(full => deletingDirectories.includes(full))) await this.ensureDeletionAbsent(full);
       return this.result(await this.run(['commit', '--depth', 'empty', '-m', message, ...[...targets].map(peg)], credentials, 'commit', local));
     });
   }
