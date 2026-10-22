@@ -7,6 +7,7 @@ const api: SvnAPI = {
   openProject: (path, auth) => ipcRenderer.invoke('svn:openProject', path, auth),
   selectProject: id => ipcRenderer.invoke('svn:selectProject', id),
   renameProject: (id, name) => ipcRenderer.invoke('svn:renameProject', id, name),
+  removeProject: id => ipcRenderer.invoke('svn:removeProject', id),
   openInVSCode: id => ipcRenderer.invoke('svn:openInVSCode', id),
   checkout: (input, auth) => ipcRenderer.invoke('svn:checkout', input, auth),
   history: (id, before, auth) => ipcRenderer.invoke('svn:history', id, before, auth),

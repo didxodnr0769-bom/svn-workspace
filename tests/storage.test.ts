@@ -139,3 +139,61 @@ test('project alias persists independently of folders, SVN identity and project 
   await assert.rejects(restarted.rename('unknown', 'alias'));
   assert.equal(restarted.snapshot().projects.find(p => p.id === second.id)?.name, 'trunk');
 });
+
+test('removing a saved project preserves existing folders, selection and unrelated settings', async t => {
+  const root = await temporary(t);
+  const a = path.join(root, 'project-a'); const b = path.join(root, 'project-b');
+  await mkdir(a); await mkdir(b);
+  await writeFile(path.join(a, 'keep.txt'), 'project A stays');
+  await writeFile(path.join(b, 'keep.txt'), 'project B stays');
+  const settings = path.join(root, 'settings'); const store = new SettingsStore(settings);
+  const first = await store.add(info(a)); const second = await store.add(info(b));
+  await store.setSvnPath('/mock/bin/svn');
+  const accounts = new CredentialStore(settings, encryption());
+  await accounts.set(info(a).url, { username: 'demo', password: 'fixture-only-password', remember: true });
+  const credentialFile = path.join(settings, 'credentials.json');
+  const credentialsBefore = await readFile(credentialFile, 'utf8');
+
+  await store.remove(first.id);
+  assert.deepEqual(store.snapshot().projects, [second]);
+  assert.equal(store.snapshot().activeProjectId, second.id);
+  assert.equal(store.snapshot().svnPath, '/mock/bin/svn');
+  assert.equal(await readFile(path.join(a, 'keep.txt'), 'utf8'), 'project A stays');
+  assert.equal(await readFile(path.join(b, 'keep.txt'), 'utf8'), 'project B stays');
+  assert.equal(await readFile(credentialFile, 'utf8'), credentialsBefore);
+  const restarted = new SettingsStore(settings); await restarted.load();
+  assert.deepEqual(restarted.snapshot(), store.snapshot());
+
+  await restarted.remove(second.id);
+  assert.deepEqual(restarted.snapshot().projects, []);
+  assert.equal(restarted.snapshot().activeProjectId, null);
+  assert.equal(restarted.snapshot().svnPath, '/mock/bin/svn');
+  assert.equal(await readFile(path.join(b, 'keep.txt'), 'utf8'), 'project B stays');
+  assert.equal(await readFile(credentialFile, 'utf8'), credentialsBefore);
+  const empty = new SettingsStore(settings); await empty.load();
+  assert.deepEqual(empty.snapshot(), restarted.snapshot());
+});
+
+test('removing an active project works after its directory is gone and unknown ids leave settings unchanged', async t => {
+  const root = await temporary(t);
+  const a = path.join(root, 'remaining'); const b = path.join(root, 'removed-on-disk');
+  await mkdir(a); await mkdir(b);
+  await writeFile(path.join(a, 'keep.txt'), 'unchanged');
+  const settings = path.join(root, 'settings'); const store = new SettingsStore(settings);
+  await store.load();
+  const first = await store.add(info(a)); const second = await store.add(info(b));
+  await rm(b, { recursive: true });
+
+  await store.remove(second.id);
+  assert.deepEqual(store.snapshot().projects, [first]);
+  assert.equal(store.snapshot().activeProjectId, first.id);
+  assert.equal(await readFile(path.join(a, 'keep.txt'), 'utf8'), 'unchanged');
+  const restarted = new SettingsStore(settings); await restarted.load();
+  assert.deepEqual(restarted.snapshot(), store.snapshot());
+  const before = restarted.snapshot();
+  const savedBefore = await readFile(path.join(settings, 'settings.json'), 'utf8');
+  await assert.rejects(restarted.remove('unknown'), /등록된 프로젝트/);
+  await assert.rejects(restarted.remove(second.id), /등록된 프로젝트/);
+  assert.deepEqual(restarted.snapshot(), before);
+  assert.equal(await readFile(path.join(settings, 'settings.json'), 'utf8'), savedBefore);
+});

@@ -25,6 +25,7 @@ export interface SvnAPI {
   openProject(path: string, auth?: AuthOptions): Promise<Result<Project>>;
   selectProject(id: string): Promise<Result<void>>;
   renameProject(id: string, name: string): Promise<Result<Project>>;
+  removeProject(id: string): Promise<Result<AppState>>;
   openInVSCode(id: string): Promise<Result<void>>;
   checkout(input: CheckoutInput, auth?: AuthOptions): Promise<Result<CheckoutResult>>;
   history(id: string, beforeRevision?: number, auth?: AuthOptions): Promise<Result<HistoryPage>>;

@@ -52,6 +52,12 @@ export class SettingsStore {
     await this.save();
     return { ...updated };
   }
+  async remove(id: string): Promise<void> {
+    if (!this.data.projects.some(project => project.id === id)) throw new Error('등록된 프로젝트를 찾을 수 없습니다.');
+    const projects = this.data.projects.filter(project => project.id !== id);
+    this.data = { ...this.data, projects, activeProjectId: this.data.activeProjectId === id ? projects[0]?.id ?? null : this.data.activeProjectId };
+    await this.save();
+  }
   async setSvnPath(binary: string): Promise<void> { this.data.svnPath = binary; await this.save(); }
 }
 interface EncryptedCredential { username: string; ciphertext: string }

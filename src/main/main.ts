@@ -112,12 +112,10 @@ function setupIPC(): void {
   handle('bootstrap', () => snapshot());
   handle('chooseDirectory', async mode => {
     if (!window) return null;
-    if (mode === 'destination') {
-      const result = await dialog.showSaveDialog(window, { title: '새 작업 폴더 위치', buttonLabel: '이 위치 사용', nameFieldLabel: '폴더 이름', defaultPath: path.join(app.getPath('documents'), 'work-web'), properties: ['createDirectory'] });
-      return result.canceled ? null : result.filePath ?? null;
-    }
-    if (mode !== 'existing') return fail('폴더 선택 요청이 올바르지 않습니다.');
-    const result = await dialog.showOpenDialog(window, { title: 'SVN 작업 폴더 열기', buttonLabel: '작업 폴더 열기', properties: ['openDirectory'] });
+    if (mode !== 'destination' && mode !== 'existing') return fail('폴더 선택 요청이 올바르지 않습니다.');
+    const result = await dialog.showOpenDialog(window, mode === 'destination'
+      ? { title: '체크아웃 받을 폴더 선택', buttonLabel: '이 폴더 사용', defaultPath: app.getPath('documents'), properties: ['openDirectory', 'createDirectory'] }
+      : { title: 'SVN 작업 폴더 열기', buttonLabel: '작업 폴더 열기', properties: ['openDirectory'] });
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('chooseSvnExecutable', async () => {
@@ -138,6 +136,12 @@ function setupIPC(): void {
     const name = text(input, '프로젝트 별칭', 128).trim();
     if (!name || /[\x00-\x1f\x7f]/.test(name)) return fail('별칭은 1~128자의 한 줄로 입력해 주세요.');
     return settings.rename(selected.id, name);
+  });
+  handle('removeProject', async id => {
+    const selected = project(id);
+    if (mutationRunning) throw new SvnServiceError('BUSY', '작업이 끝난 뒤 프로젝트를 목록에서 제거해 주세요.');
+    await settings.remove(selected.id);
+    return snapshot();
   });
   handle('openInVSCode', id => openInVSCode(project(id).path));
   handle('checkout', async (input, auth) => mutation(async () => {
