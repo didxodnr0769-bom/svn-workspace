@@ -72,14 +72,21 @@ node scripts/create-demo.mjs work/demo
 | 명령 | 검사 범위 |
 | --- | --- |
 | `npm run typecheck` | TypeScript 타입 검사 |
-| `npm test` | SVN 서비스 통합 테스트, 설정·인증 정보 저장, 프로젝트 관리, VS Code 실행 도우미 |
+| `npm test` | SVN 서비스 통합 테스트, 선택 되돌리기와 새 파일 보존, 설정·인증 정보 저장, 프로젝트 관리, VS Code 실행 도우미 |
 | `npm run test:renderer` | 프로젝트 전환과 늦은 응답 처리, 목록 너비 조절·복원, 별칭과 VS Code 호출 연결 |
 | `npm run test:folders` | 폴더 삭제 미리보기·범위 확인·커밋, 오류 처리, 작은 창 레이아웃 |
 | `npm run test:projects` | 체크아웃 폴더 선택, 실제 IPC·설정 저장, 프로젝트 제거와 재시작 복원 |
+| `npm run test:revert` | 선택 되돌리기의 범위 확인·취소·실행·완료 안내, 새 파일·미선택 변경 보존과 변경 목록 갱신 |
 
 SVN 서비스 테스트는 임시 저장소와 작업 폴더를 사용합니다. 인증 테스트는 임의의 localhost 포트에서 `svnserve`를 실행하므로 로컬 통신 권한이 필요합니다. 테스트용 실행 경로가 다르면 `SVN_BINARY`, `SVNADMIN_BINARY`를 지정하세요. `svnserve`는 지정한 `svnadmin`과 같은 디렉터리에서 찾습니다.
 
-화면 테스트는 빌드 후 별도 Electron 창을 실행합니다. 가짜 API 또는 가짜 SVN 실행 파일과 분리된 앱 데이터를 사용하므로 실제 업무 저장소를 연결하지 않습니다. 설정 저장 테스트의 암호화는 mock이며 실제 macOS 암호화 저장소의 동작까지 검증하지는 않습니다.
+화면 테스트는 빌드 후 별도 Electron 창과 분리된 앱 데이터를 사용합니다. `test:renderer`, `test:folders`, `test:projects`는 가짜 API 또는 가짜 SVN 실행 파일을 연결합니다. 설정 저장 테스트의 암호화는 mock이며 실제 macOS 암호화 저장소의 동작까지 검증하지는 않습니다.
+
+`test:revert`는 별도의 로컬 예제 SVN 저장소와 실제 앱 IPC를 사용합니다. 직접 조작하며 되돌리기를 체험하려면 다음 명령으로 테스트 프로젝트의 커밋 화면을 열어 둘 수 있습니다. 창을 닫으면 임시 예제 데이터가 정리됩니다.
+
+```sh
+npm run test:revert -- --preview
+```
 
 ## macOS 앱 패키징
 
@@ -94,6 +101,19 @@ npm run dist:mac
 DMG를 열고 앱을 Applications로 복사해 사용할 수 있습니다. SVN CLI는 사용하는 Mac에 별도로 설치해야 합니다.
 
 현재 패키징 설정에는 Apple Developer 서명과 공증이 구성되어 있지 않습니다. macOS에서 실행 확인 안내가 나오면 앱 출처와 표시되는 안내를 확인하세요.
+
+## 라이선스 고지 관리
+
+프로젝트 코드는 [MIT 라이선스](../LICENSE)를 사용합니다. 런타임 의존성을 변경하면 현재 설치된 패키지와 lock 파일을 기준으로 제3자 고지를 갱신하고 검증하세요.
+
+```sh
+npm run licenses:generate
+npm run licenses:check
+```
+
+`licenses:generate`는 [THIRD_PARTY_NOTICES.txt](../THIRD_PARTY_NOTICES.txt)를 생성하고, `licenses:check`는 고지가 현재 의존성과 일치하는지 검사합니다. `npm run build`에서도 자동으로 검증합니다.
+
+macOS 앱 패키지의 `SVN Workspace.app/Contents/Resources/licenses/`에는 프로젝트·제3자 라이선스와 Electron·Chromium 고지가 포함됩니다. 패키지를 배포할 때 이 디렉터리도 함께 유지하세요.
 
 ## 코드 구성
 

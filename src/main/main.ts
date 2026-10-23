@@ -172,6 +172,19 @@ function setupIPC(): void {
   handle('status', id => apiService().status(project(id).path));
   handle('workingDiff', (id, relative) => apiService().workingDiff(project(id).path, text(relative, '파일')));
   handle('deletionPreview', (id, relative) => apiService().deletionPreview(project(id).path, text(relative, '폴더')));
+  const revertPaths = (files: unknown): string[] => {
+    if (!Array.isArray(files) || !files.length || files.length > 2000) return fail('되돌릴 항목을 선택해 주세요.');
+    return [...new Set(files.map((file: unknown) => text(file, '파일')))];
+  };
+  handle('revertPreview', (id, files) => {
+    if (mutationRunning) throw new SvnServiceError('BUSY', '작업이 끝난 뒤 되돌릴 범위를 확인해 주세요.');
+    return apiService().revertPreview(project(id).path, revertPaths(files));
+  });
+  handle('revert', (id, files, fingerprint) => mutation(() => {
+    const token = text(fingerprint, '되돌리기 확인 정보', 128);
+    if (!/^[a-f0-9]{64}$/.test(token)) return fail('되돌릴 범위를 다시 확인해 주세요.');
+    return apiService().revert(project(id).path, revertPaths(files), token);
+  }));
   handle('update', (id, auth) => mutation(async () => { const selected = project(id); return withAuth(selected.url, auth, account => apiService().update(selected.path, account)); }));
   handle('commit', (id, files, message, auth) => mutation(async () => {
     const selected = project(id);

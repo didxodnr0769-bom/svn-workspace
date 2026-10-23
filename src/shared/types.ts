@@ -12,9 +12,12 @@ export type WorkingStatus = 'modified' | 'added' | 'deleted' | 'missing' | 'unve
 export interface WorkingChange { path: string; status: WorkingStatus; props: string; treeConflict: boolean; kind: 'file' | 'dir' | 'unknown' }
 export interface DeletionEntry { path: string; kind: 'file' | 'dir' | 'unknown' }
 export interface DeletionPreview { path: string; entries: DeletionEntry[] }
+export interface RevertTarget { path: string; kind: 'file' | 'dir'; status: WorkingStatus; entries: DeletionEntry[] }
+export interface RevertPreview { targets: RevertTarget[]; preservedPaths: string[]; fingerprint: string }
+export interface RevertResult { revertedPaths: string[]; preservedPaths: string[]; output: string }
 export interface OperationFile { path: string; action: string }
 export interface MutationResult { revision?: number; output: string; files: OperationFile[]; conflicts: string[] }
-export interface OperationProgress { operation: 'checkout' | 'update' | 'commit' | 'resolve'; message: string }
+export interface OperationProgress { operation: 'checkout' | 'update' | 'commit' | 'resolve' | 'revert'; message: string }
 export interface CheckoutInput { url: string; destination: string; name: string }
 export interface CheckoutResult { project: Project; result: MutationResult }
 export interface AuthOptions { credentials?: Credentials }
@@ -33,6 +36,8 @@ export interface SvnAPI {
   status(id: string): Promise<Result<WorkingChange[]>>;
   workingDiff(id: string, path: string): Promise<Result<string>>;
   deletionPreview(id: string, path: string): Promise<Result<DeletionPreview>>;
+  revertPreview(id: string, paths: string[]): Promise<Result<RevertPreview>>;
+  revert(id: string, paths: string[], fingerprint: string): Promise<Result<RevertResult>>;
   update(id: string, auth?: AuthOptions): Promise<Result<MutationResult>>;
   commit(id: string, paths: string[], message: string, auth?: AuthOptions): Promise<Result<MutationResult>>;
   resolve(id: string, path: string): Promise<Result<MutationResult>>;

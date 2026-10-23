@@ -1,10 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { access, lstat, readdir, realpath, stat, readFile, readlink } from 'node:fs/promises';
-import { constants } from 'node:fs';
+import { constants, createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { XMLParser } from 'fast-xml-parser';
-import type { CommittedPath, Credentials, DeletionPreview, ErrorCode, HistoryEntry, HistoryPage, MutationResult, OperationProgress, WorkingChange, WorkingCopyInfo, WorkingStatus } from '../shared/types';
+import type { CommittedPath, Credentials, DeletionPreview, ErrorCode, HistoryEntry, HistoryPage, MutationResult, OperationProgress, RevertPreview, RevertResult, RevertTarget, WorkingChange, WorkingCopyInfo, WorkingStatus } from '../shared/types';
 
 export class SvnServiceError extends Error {
   constructor(public code: ErrorCode, message: string, public detail?: string, public authTarget?: string) { super(message); this.name = 'SvnServiceError'; }
@@ -14,6 +15,7 @@ const array = <T>(value: T | T[] | undefined): T[] => value === undefined ? [] :
 const value = (v: unknown): string => v === undefined || v === null ? '' : typeof v === 'object' ? String((v as Record<string, unknown>)['#text'] ?? '') : String(v);
 const invalid = (message: string): never => { throw new SvnServiceError('INVALID_ARGUMENT', message); };
 const peg = (p: string) => `${p}@`;
+const stableState = (input: unknown): string => Array.isArray(input) ? `[${input.map(stableState).sort().join(',')}]` : input && typeof input === 'object' ? `{${Object.keys(input).sort().map(key => `${JSON.stringify(key)}:${stableState((input as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(input) ?? 'null';
 let mutationActive = false;
 const outputLimit = 24 * 1024 * 1024;
 
@@ -224,6 +226,70 @@ export class SvnService {
     try { await lstat(full); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
     invalid('삭제된 폴더 위치에 파일이나 폴더가 다시 생겼습니다. 새로고침 후 내용을 확인해 주세요.');
+  }
+
+  async revertPreview(root: string, files: string[]): Promise<RevertPreview> {
+    if (!Array.isArray(files) || !files.length || files.length > 2000 || files.some(file => typeof file !== 'string' || !file || /[\r\n\0]/.test(file))) invalid('되돌릴 파일이나 삭제된 폴더를 선택해 주세요.');
+    const local = await this.local(root);
+    const selected = [...new Set(await Promise.all(files.map(file => this.local(local, file))))].sort();
+    if (selected.includes(local)) invalid('프로젝트 전체 대신 되돌릴 항목을 각각 선택해 주세요.');
+    const changes = await this.status(local);
+    const directories = selected.filter(full => changes.some(change => change.path === path.relative(local, full) && change.kind === 'dir' && ['deleted', 'missing'].includes(change.status)));
+    const topLevel = selected.filter(full => !directories.some(parent => full.startsWith(parent + path.sep)));
+    const targets: RevertTarget[] = [];
+    const preservedPaths: string[] = [];
+    const fingerprint = createHash('sha256').update(local);
+    for (const full of topLevel) {
+      const relative = path.relative(local, full);
+      const change = changes.find(item => item.path === relative) ?? invalid('선택한 항목의 변경 상태를 확인할 수 없습니다. 새로고침 후 다시 선택해 주세요.');
+      if (change.treeConflict || change.kind === 'unknown') invalid('선택한 항목의 변경 상태를 확인할 수 없습니다. 새로고침 후 다시 선택해 주세요.');
+      if (['added', 'unversioned'].includes(change.status)) { preservedPaths.push(relative); continue; }
+      if (!['modified', 'deleted', 'missing', 'normal'].includes(change.status) || (change.kind === 'dir' && !directories.includes(full))) invalid('수정된 파일 또는 삭제·누락된 항목만 되돌릴 수 있습니다. 충돌·교체·폴더 속성 변경은 별도 SVN 도구에서 처리해 주세요.');
+      const entries = change.kind === 'dir' ? (await this.folderDeletionPreview(local, relative, changes)).entries : [];
+      if (['deleted', 'missing'].includes(change.status)) await this.ensureRevertAbsent(full);
+      const scope = changes.filter(item => item.path === relative || (change.kind === 'dir' && item.path.startsWith(relative + path.sep)));
+      if (scope.some(item => item.treeConflict || ['added', 'unversioned', 'replaced', 'conflicted', 'obstructed', 'incomplete'].includes(item.status))) invalid('폴더 안에 복원 범위를 확인할 수 없는 변경이 있습니다. 새로고침하거나 별도 SVN 도구에서 처리해 주세요.');
+      const metadata = await this.run(['info', '--xml', '--depth', change.kind === 'dir' ? 'infinity' : 'empty', peg(full)]);
+      const details = array<Record<string, any>>(xml.parse(metadata).info?.entry);
+      if (!details.length || details.some(item => ['add', 'replace'].includes(value(item['wc-info']?.schedule)) || item['tree-conflict'] || item['wc-info']?.['tree-conflict'])) invalid('추가·교체 또는 트리 충돌이 포함된 항목은 되돌릴 수 없습니다.');
+      // SVN omits scheduled deletions from proplist; their state is captured by info/status.
+      const properties = change.status === 'deleted' ? null : xml.parse(await this.run(['proplist', '--xml', '--verbose', '--depth', change.kind === 'dir' ? 'infinity' : 'empty', peg(full)]));
+      // SVN's XML attribute/property order can vary between processes.
+      fingerprint.update(stableState({ change, scope, entries, metadata: xml.parse(metadata), properties }));
+      if (change.kind === 'file' && !['deleted', 'missing'].includes(change.status)) {
+        const before = await lstat(full);
+        if (!before.isFile() && !before.isSymbolicLink()) invalid('일반 파일 또는 SVN 링크 파일만 되돌릴 수 있습니다.');
+        fingerprint.update(JSON.stringify({ mode: before.mode, size: before.size, mtime: before.mtimeMs, ino: before.ino }));
+        if (before.isSymbolicLink()) fingerprint.update(await readlink(full));
+        else for await (const chunk of createReadStream(full)) fingerprint.update(chunk);
+        const after = await lstat(full);
+        if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.mode !== after.mode) invalid('확인 중 파일이 변경되었습니다. 되돌릴 범위를 다시 확인해 주세요.');
+      }
+      targets.push({ path: relative, kind: change.kind as 'file' | 'dir', status: change.status, entries });
+    }
+    if (!targets.length) invalid('새 파일은 보존됩니다. 되돌릴 수정 파일이나 삭제된 항목을 선택해 주세요.');
+    fingerprint.update(JSON.stringify({ targets, preservedPaths }));
+    return { targets, preservedPaths, fingerprint: fingerprint.digest('hex') };
+  }
+
+  private async ensureRevertAbsent(full: string): Promise<void> {
+    try { await lstat(full); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    invalid('삭제된 경로에 새 항목이 생겼습니다. 내용을 보존하기 위해 되돌리기를 중단했습니다.');
+  }
+
+  async revert(root: string, files: string[], fingerprint: string): Promise<RevertResult> {
+    if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) invalid('되돌릴 범위를 먼저 확인해 주세요.');
+    return this.mutate(async () => {
+      const preview = await this.revertPreview(root, files);
+      if (preview.fingerprint !== fingerprint) invalid('확인 이후 대상이나 변경 내용이 달라졌습니다. 되돌릴 범위를 다시 확인해 주세요.');
+      const local = await this.local(root);
+      const paths = await Promise.all(preview.targets.map(target => this.local(local, target.path)));
+      for (const target of preview.targets) if (['deleted', 'missing'].includes(target.status)) await this.ensureRevertAbsent(await this.local(local, target.path));
+      // Only deleted directories recurse. New files and non-selected changes are never targets.
+      const output = await this.run(['revert', '--depth', 'infinity', ...paths.map(peg)], undefined, 'revert');
+      return { revertedPaths: preview.targets.map(target => target.path), preservedPaths: preview.preservedPaths, output };
+    });
   }
 
   async workingDiff(root: string, relativePath: string): Promise<string> {

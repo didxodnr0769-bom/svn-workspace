@@ -38,3 +38,28 @@ button.deletion-entry.selected{background:#eaf2ff;color:#3677ca}
 .deletion-review-folder>h3{display:flex;gap:9px;align-items:center;overflow-wrap:anywhere;padding:12px 14px 8px;font-size:13px;color:#6d4949;background:#fffafa}
 .deletion-review-folder>.deletion-summary{padding:0 14px 11px;background:#fffafa}
 .deletion-review-folder>.deletion-tree{max-height:260px;border-top:1px solid #f2e6e4}
+
+button.danger-outline{color:#c54c4c;border-color:#e8b4b4;background:#fff8f7}
+button.danger-outline:hover:not(:disabled){color:#b43f3f;border-color:#d58a8a;background:#fff0ef}
+button.danger{color:#fff;border-color:#d44848;background:#d44848}
+button.danger:hover:not(:disabled){background:#bc3535;border-color:#bc3535}
+.compose-footer>.revert-actions{align-items:center;flex-wrap:wrap;min-width:0;gap:10px}
+.selection-count{font-size:11px;color:#7d8a9e}
+.selection-count strong{font-weight:500;color:#6e809a}
+.revert-review{display:flex;flex-direction:column;gap:15px}
+.revert-warning{display:flex;align-items:center;gap:9px;padding:13px 15px;background:#fff1f0;color:#bd4141;border-radius:7px;font-size:12px;font-weight:550;line-height:1.6}
+.revert-targets{list-style:none;padding:0;margin:0;border:1px solid var(--line);border-radius:8px;max-height:270px;overflow:auto}
+.revert-targets>li+li{border-top:1px solid var(--line)}
+.revert-target-heading{display:flex;align-items:center;gap:10px;padding:14px;color:#72849d}
+.revert-target-heading strong{font-size:12px;color:#344155;overflow-wrap:anywhere;min-width:0}
+.revert-target-heading>span{margin-left:auto;font-size:11px;color:#8794a6;flex-shrink:0}
+.revert-descendants{list-style:none;padding:0 14px 12px 30px;margin:0}
+.revert-descendants li{display:flex;align-items:center;gap:8px;color:#8291a6;font-size:12px;min-height:30px;line-height:1.6}
+.revert-descendants li>span{overflow-wrap:anywhere;min-width:0}
+.revert-preserved{margin-top:5px;overflow-wrap:anywhere}
+.revert-success{display:flex;align-items:center;gap:12px;padding:13px 16px;margin:12px 18px;border:1px solid #cee5d5;border-radius:8px;background:#f2faf5;color:#528b65;flex-shrink:0}
+.revert-success>div{flex:1;min-width:0}
+.revert-success strong{font-size:12px;font-weight:600}
+.revert-success p{font-size:11px;line-height:1.6;margin-top:5px;color:#779885}
+.revert-success .icon-button{color:#779885}
+@media(max-height:760px){.revert-review{gap:12px}.revert-targets{max-height:205px}.revert-success{margin:8px 14px;padding:10px 13px}}

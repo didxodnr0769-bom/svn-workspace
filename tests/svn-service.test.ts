@@ -2,7 +2,7 @@ import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, lstat, utimes } from 'node:fs/promises';
 import { createServer, createConnection } from 'node:net';
 import { once } from 'node:events';
 import os from 'node:os';
@@ -83,6 +83,78 @@ test('selected commit preserves other modified and unversioned files including s
   assert.match(stdout, /beta.txt/);
 });
 
+test('selected revert restores only reviewed files and properties while preserving added, new and unselected files', async t => {
+  const { wc, service, svn } = await fixture(t);
+  await writeFile(path.join(wc, 'alpha.txt'), 'alpha discard\n');
+  await writeFile(path.join(wc, '한글 공백@파일.txt'), 'special discard\n');
+  await writeFile(path.join(wc, 'beta.txt'), 'keep unselected modification\n');
+  await writeFile(path.join(wc, 'new.txt'), 'keep new file\n');
+  await writeFile(path.join(wc, 'added.txt'), 'keep scheduled addition\n');
+  await svn('add', 'added.txt');
+  await svn('propset', 'example:note', 'discard local property', 'alpha.txt');
+  const selected = ['alpha.txt', './alpha.txt', '한글 공백@파일.txt', 'new.txt', 'added.txt'];
+  const before = (await svn('status')).stdout;
+  const preview = await service.revertPreview(wc, selected);
+  assert.deepEqual(preview.targets.map(target => target.path), ['alpha.txt', '한글 공백@파일.txt']);
+  assert.deepEqual(preview.preservedPaths, ['added.txt', 'new.txt']);
+  assert.equal((await svn('status')).stdout, before, 'preview has no side effects');
+  assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'alpha discard\n');
+  const result = await service.revert(wc, selected, preview.fingerprint);
+  assert.deepEqual(result.revertedPaths, preview.targets.map(target => target.path));
+  assert.deepEqual(result.preservedPaths, preview.preservedPaths);
+  assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'alpha original\n');
+  assert.equal(await readFile(path.join(wc, '한글 공백@파일.txt'), 'utf8'), 'special original\n');
+  assert.equal(await readFile(path.join(wc, 'beta.txt'), 'utf8'), 'keep unselected modification\n');
+  assert.equal(await readFile(path.join(wc, 'new.txt'), 'utf8'), 'keep new file\n');
+  assert.equal(await readFile(path.join(wc, 'added.txt'), 'utf8'), 'keep scheduled addition\n');
+  const status = await service.status(wc);
+  assert.deepEqual(status.map(change => [change.path, change.status]), [['added.txt', 'added'], ['beta.txt', 'modified'], ['new.txt', 'unversioned']]);
+  assert.doesNotMatch((await svn('proplist', 'alpha.txt')).stdout, /example:note/);
+  await assert.rejects(service.revertPreview(wc, ['new.txt', 'added.txt']), { code: 'INVALID_ARGUMENT' });
+  assert.equal((await service.history(wc)).entries[0].revision, 1, 'local revert does not create a repository commit');
+});
+
+test('revert rejects changed bytes and properties after confirmation, including same-size files with restored timestamps', async t => {
+  const { wc, service, svn } = await fixture(t);
+  const file = path.join(wc, 'alpha.txt');
+  await writeFile(file, 'discard A\n');
+  const originalTimes = await lstat(file);
+  const preview = await service.revertPreview(wc, ['alpha.txt']);
+  await writeFile(file, 'discard B\n');
+  await utimes(file, originalTimes.atime, originalTimes.mtime);
+  await assert.rejects(service.revert(wc, ['alpha.txt'], preview.fingerprint), { code: 'INVALID_ARGUMENT' });
+  assert.equal(await readFile(file, 'utf8'), 'discard B\n');
+  const propertyPreview = await service.revertPreview(wc, ['alpha.txt']);
+  await svn('propset', 'example:note', 'changed after preview', 'alpha.txt');
+  await assert.rejects(service.revert(wc, ['alpha.txt'], propertyPreview.fingerprint), { code: 'INVALID_ARGUMENT' });
+  assert.equal((await svn('propget', 'example:note', 'alpha.txt')).stdout.trim(), 'changed after preview');
+  const pathsPreview = await service.revertPreview(wc, ['alpha.txt']);
+  await writeFile(path.join(wc, 'beta.txt'), 'do not silently include a different target\n');
+  await assert.rejects(service.revert(wc, ['beta.txt'], pathsPreview.fingerprint), { code: 'INVALID_ARGUMENT' });
+  assert.equal(await readFile(path.join(wc, 'beta.txt'), 'utf8'), 'do not silently include a different target\n');
+  await assert.rejects(service.revert(wc, ['alpha.txt'], ''), { code: 'INVALID_ARGUMENT' });
+});
+
+test('revert restores deleted and missing files but never overwrites a recreated deleted path or replacement', async t => {
+  const { wc, service, svn } = await fixture(t);
+  await svn('delete', 'alpha.txt');
+  await rm(path.join(wc, '한글 공백@파일.txt'));
+  const selected = ['alpha.txt', '한글 공백@파일.txt'];
+  const preview = await service.revertPreview(wc, selected);
+  await service.revert(wc, selected, preview.fingerprint);
+  assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'alpha original\n');
+  assert.equal(await readFile(path.join(wc, '한글 공백@파일.txt'), 'utf8'), 'special original\n');
+  await svn('delete', 'alpha.txt');
+  const absent = await service.revertPreview(wc, ['alpha.txt']);
+  await writeFile(path.join(wc, 'alpha.txt'), 'new contents at deleted path\n');
+  await assert.rejects(service.revert(wc, ['alpha.txt'], absent.fingerprint), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.revertPreview(wc, ['alpha.txt']), { code: 'INVALID_ARGUMENT' });
+  assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'new contents at deleted path\n');
+  await svn('add', 'alpha.txt');
+  await assert.rejects(service.revertPreview(wc, ['alpha.txt']), { code: 'INVALID_ARGUMENT' });
+  for (const target of ['', '.', './', '../outside', '/tmp/outside', '.svn/wc.db']) await assert.rejects(service.revertPreview(wc, [target]), { code: 'INVALID_ARGUMENT' });
+});
+
 test('new directory files are selectable and previews respect ignore patterns and binary data', async t => {
   const { wc, service, svn } = await fixture(t);
   await svn('propset', 'svn:global-ignores', '*.secret\nignore-*', '.');
@@ -130,6 +202,32 @@ async function folderDeletionFixture(t: TestContext) {
   await fixtureData.svn('commit', '-m', '예제 폴더 추가', '--username', 'demo');
   await fixtureData.svn('update');
   return { ...fixtureData, folder, absolute };
+}
+
+for (const state of ['deleted', 'missing'] as const) {
+  test(`selected revert restores a ${state} directory and its reviewed descendants without touching siblings`, async t => {
+    const { wc, folder, absolute, service, svn } = await folderDeletionFixture(t);
+    if (state === 'deleted') await svn('delete', `${folder}@`);
+    else await rm(absolute, { recursive: true });
+    await writeFile(path.join(wc, 'alpha.txt'), 'keep sibling change\n');
+    await writeFile(path.join(wc, 'new.txt'), 'keep sibling new file\n');
+    const selected = [folder, `${folder}/first.txt`, `${folder}/nested`, `./${folder}`];
+    const before = (await svn('status')).stdout;
+    const preview = await service.revertPreview(wc, selected);
+    assert.deepEqual(preview.targets.map(target => target.path), [folder]);
+    assert.equal(preview.targets[0].kind, 'dir');
+    assert.equal(preview.targets[0].entries.length, 4);
+    assert.equal((await svn('status')).stdout, before);
+    await assert.rejects(readFile(path.join(absolute, 'first.txt')), { code: 'ENOENT' });
+    const restored = await service.revert(wc, selected, preview.fingerprint);
+    assert.deepEqual(restored.revertedPaths, [folder]);
+    assert.equal(await readFile(path.join(absolute, 'first.txt'), 'utf8'), 'first contents\n');
+    assert.equal(await readFile(path.join(absolute, 'nested', '한글 @파일.txt'), 'utf8'), 'nested contents\n');
+    assert.ok((await lstat(path.join(absolute, 'nested', 'empty'))).isDirectory());
+    assert.equal(await readFile(path.join(wc, 'alpha.txt'), 'utf8'), 'keep sibling change\n');
+    assert.equal(await readFile(path.join(wc, 'new.txt'), 'utf8'), 'keep sibling new file\n');
+    assert.equal((await service.history(wc)).entries[0].revision, 2);
+  });
 }
 
 test('scheduled folder deletion previews all descendants without mutation and commits only selected deletion', async t => {
@@ -212,6 +310,7 @@ for (const deletionState of ['deleted', 'missing'] as const) {
       return true;
     });
     await assert.rejects(service.commit(wc, [folder], '불완전 범위 차단'), { code: 'INVALID_ARGUMENT' });
+    await assert.rejects(service.revertPreview(wc, [folder]), { code: 'INVALID_ARGUMENT' });
     assert.equal((await svn('status')).stdout, before.stdout);
     assert.equal((await service.history(wc)).entries[0].revision, 2);
   });
@@ -231,6 +330,7 @@ test('folder deletion refuses a switched descendant rather than guessing its del
     return true;
   });
   await assert.rejects(service.commit(wc, [folder], '전환 경로 차단'), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.revertPreview(wc, [folder]), { code: 'INVALID_ARGUMENT' });
   assert.equal((await svn('status')).stdout, before.stdout);
   assert.equal((await service.history(wc)).entries[0].revision, 3);
 });
@@ -264,6 +364,7 @@ test('update receives peer commits, conflicts are retained until explicit resolu
   await other('commit', 'alpha.txt', '-m', '충돌 발생');
   await service.update(wc);
   assert.equal((await service.status(wc)).find(c => c.path === 'alpha.txt')?.status, 'conflicted');
+  await assert.rejects(service.revertPreview(wc, ['alpha.txt']), { code: 'INVALID_ARGUMENT' });
   await writeFile(path.join(wc, 'alpha.txt'), 'resolved by user\n');
   await service.resolve(wc, 'alpha.txt');
   assert.equal((await service.status(wc)).find(c => c.path === 'alpha.txt')?.status, 'modified');
@@ -280,8 +381,10 @@ test('checkout rejects nonempty destination without modifying it; file paths can
   await assert.rejects(service.workingDiff(wc, '../outside.txt'), { code: 'INVALID_ARGUMENT' });
   await assert.rejects(service.commit(wc, ['../outside.txt'], 'escape'), { code: 'INVALID_ARGUMENT' });
   await assert.rejects(service.resolve(wc, '../outside.txt'), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.revertPreview(wc, ['../outside.txt']), { code: 'INVALID_ARGUMENT' });
   await symlink(occupied, path.join(wc, 'external'));
   await assert.rejects(service.workingDiff(wc, 'external/keep.txt'), { code: 'INVALID_ARGUMENT' });
+  await assert.rejects(service.revertPreview(wc, ['external/keep.txt']), { code: 'INVALID_ARGUMENT' });
 });
 
 test('a running mutation locks other mutations and cancellation releases the lock', async t => {
@@ -298,6 +401,7 @@ test('a running mutation locks other mutations and cancellation releases the loc
   }
   assert.equal(await readFile(started, 'utf8'), 'started');
   await assert.rejects(service.update(wc), { code: 'BUSY' });
+  await assert.rejects(service.revert(wc, ['alpha.txt'], 'a'.repeat(64)), { code: 'BUSY' });
   service.cancel();
   await rejection;
   const real = new SvnService({ binaryPath: binary });
